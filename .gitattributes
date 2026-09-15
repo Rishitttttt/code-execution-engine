@@ -1,0 +1,4 @@
+# Normalise to LF in the repository and on checkout. The Makefile, the CI
+# shell steps, and the SQL that Postgres runs at init all execute on Linux;
+# CRLF line endings break them when the repo is cloned on Windows.
+* text=auto eol=lf
