@@ -136,6 +136,14 @@ func TestInfiniteLoopHitsTheRunTimeout(t *testing.T) {
 	if !out.TimedOut {
 		t.Errorf("expected TimedOut, got %+v", out)
 	}
+	// Guards a race that only shows up on a fast daemon: waiting on the
+	// container before starting it is answered immediately, which reports a
+	// few milliseconds of wall time and exit code 0 for a program that in fact
+	// ran until it was killed.
+	if out.WallTimeMS < 4000 {
+		t.Errorf("wall time %dms is far below the 5s budget the program burned; "+
+			"the container exit was observed before it ran", out.WallTimeMS)
+	}
 }
 
 func TestMemoryHogIsOOMKilled(t *testing.T) {

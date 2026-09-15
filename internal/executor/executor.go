@@ -206,12 +206,18 @@ func (e *Executor) runContainer(ctx context.Context, id, nonce, stdin string) (*
 	}
 	defer att.Close()
 
-	waitCh, errCh := e.docker.ContainerWait(ctx, id, container.WaitConditionNotRunning)
-
 	started := time.Now()
 	if err := e.docker.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
 		return nil, fmt.Errorf("start container: %w", err)
 	}
+
+	// Wait is registered *after* start, never before. A created-but-unstarted
+	// container already satisfies WaitConditionNotRunning, so waiting first
+	// races: on a fast daemon the wait is answered immediately with exit code
+	// 0 before the container has run at all. Waiting afterwards is safe here
+	// because AutoRemove is off, so the exit status survives for the daemon to
+	// report even if the container is already gone.
+	waitCh, errCh := e.docker.ContainerWait(ctx, id, container.WaitConditionNotRunning)
 
 	// Feed stdin in the background: a program that never reads it would
 	// otherwise block this goroutine on a full pipe buffer forever.
@@ -249,10 +255,12 @@ func (e *Executor) runContainer(ctx context.Context, id, nonce, stdin string) (*
 	wall := time.Since(started)
 
 	// The stream closes once the container exits; bound the wait so a wedged
-	// attach cannot outlive the container it belongs to.
+	// attach cannot outlive the container it belongs to. Losing this race
+	// costs the metrics marker, which is the last thing written, so the grace
+	// is generous rather than tight.
 	select {
 	case <-copyDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		e.log.Warn("output stream did not close after exit", "container", id[:12])
 	}
 
