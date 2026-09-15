@@ -1,0 +1,99 @@
+name: ocee
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ocee
+      POSTGRES_PASSWORD: ocee
+      POSTGRES_DB: ocee
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Postgres runs everything in this directory on first boot, which is
+      # enough schema management for a local stack. Changing a migration means
+      # `docker compose down -v` to recreate the volume.
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ocee -d ocee"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      args:
+        SERVICE: api
+    environment:
+      DATABASE_URL: postgres://ocee:ocee@postgres:5432/ocee?sslmode=disable
+      REDIS_ADDR: redis:6379
+      API_ADDR: ":8080"
+      # Webhook targets on private/loopback addresses are rejected as SSRF.
+      # Export WEBHOOK_ALLOW_PRIVATE=true only to test against a receiver on
+      # your own machine.
+      WEBHOOK_ALLOW_PRIVATE: "${WEBHOOK_ALLOW_PRIVATE:-false}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      args:
+        SERVICE: worker
+    environment:
+      DATABASE_URL: postgres://ocee:ocee@postgres:5432/ocee?sslmode=disable
+      REDIS_ADDR: redis:6379
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-8}"
+      MEMORY_LIMIT_MB: "256"
+      CPU_LIMIT: "1.0"
+      RUN_TIMEOUT: "10s"
+      COMPILE_TIMEOUT: "20s"
+    volumes:
+      # The worker drives the host daemon to start *sibling* containers rather
+      # than nesting Docker inside Docker.
+      #
+      # Security note: this socket is root-equivalent access to the host. It is
+      # acceptable for a local development stack and is the reason the sandbox
+      # containers themselves are so tightly constrained. A real deployment
+      # would run workers on dedicated hosts, or behind a proxy that allows
+      # only the container calls this engine actually makes.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Root inside the worker container is required to open that socket; the
+    # code that runs untrusted submissions never runs as root.
+    user: root
+    extra_hosts:
+      # Lets a webhook reach a receiver running on the developer's machine.
+      # Docker Desktop provides this name already; this line is what makes the
+      # same compose file work on Linux.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
