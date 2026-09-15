@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Check formatting
+        # internal/db is sqlc output and is not hand-formatted.
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^internal/db/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  sandbox:
+    # The sandbox assertions (fork bomb, OOM kill, network isolation, read-only
+    # rootfs) need a real Docker daemon, which the ubuntu runner provides.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Pre-pull language images
+        # Done here rather than inside the tests so a slow registry shows up as
+        # a pull failure instead of a mysterious execution timeout.
+        run: |
+          docker pull python:3.12-alpine
+          docker pull node:22-alpine
+          docker pull eclipse-temurin:21-jdk-alpine
+          docker pull gcc:14
+
+      - name: Integration tests
+        run: go test -tags=integration -timeout 25m ./internal/executor/...
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build service images
+        run: |
+          docker build --build-arg SERVICE=api -t ocee-api .
+          docker build --build-arg SERVICE=worker -t ocee-worker .
